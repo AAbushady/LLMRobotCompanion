@@ -1,17 +1,4 @@
-//www.elegoo.com
-//2016.12.9
-
 /*
-  LiquidCrystal Library - Hello World
-
- Demonstrates the use a 16x2 LCD display.  The LiquidCrystal
- library works with all LCD displays that are compatible with the
- Hitachi HD44780 driver. There are many of them out there, and you
- can usually tell them by the 16-pin interface.
-
- This sketch prints "Hello World!" to the LCD
- and shows the time.
-
   The circuit:
  * LCD RS pin to digital pin 7
  * LCD Enable pin to digital pin 8
@@ -25,40 +12,94 @@
  * 10K resistor:
  * ends to +5V and ground
  * wiper to LCD VO pin (pin 3)
-
- Library originally added 18 Apr 2008
- by David A. Mellis
- library modified 5 Jul 2009
- by Limor Fried (http://www.ladyada.net)
- example added 9 Jul 2009
- by Tom Igoe
- modified 22 Nov 2010
- by Tom Igoe
-
- This example code is in the public domain.
-
- http://www.arduino.cc/en/Tutorial/LiquidCrystal
  */
 
-// include the library code:
 #include <LiquidCrystal.h>
 #include <Arduino.h>
 
-// initialize the library with the numbers of the interface pins
+// Initialize the LCD library with the numbers of the interface pins
 LiquidCrystal lcd(7, 8, 9, 10, 11, 12);
 
-void setup() {
-    // set up the LCD's number of columns and rows:
+int analogPin = A0;
+int outputPin = 2;
+
+int inputValue  = 0;
+
+String inputString = "";
+bool stringComplete = false;
+
+void sendStatus();
+
+void setup()
+{
+    // Set up the LCD's number of columns and rows:
     lcd.begin(16, 2);
-    // Print a message to the LCD.
-    lcd.print("Hello, World!");
+    Serial.begin(9600);
+    while(!Serial)
+    {
+        ; // wait for serial port to connect. Needed for native USB port only
+    }
 }
 
-void loop() {
-    // set the cursor to column 0, line 1
-    // (note: line 1 is the second row, since counting begins with 0):
-    lcd.setCursor(0, 1);
-    // print the number of seconds since reset:
-    lcd.print(millis() / 1000);
+void loop()
+{
+    if (stringComplete)
+    {
+        if (inputString.startsWith("status"))
+        {
+            sendStatus();
+        }
+        else if (inputString.startsWith("set"))
+        {
+            if (inputString.indexOf("on") > -1)
+            {
+                lcd.display();
+            }
+            else if (inputString.indexOf("off") > -1)
+            {
+                lcd.clear();
+                lcd.noDisplay();
+            }
+            else
+            {
+                lcd.clear();
+                lcd.print("Unknown set command");
+            }
+        }
+        else if(inputString.startsWith("clear"))
+        {
+            lcd.clear();
+        }
+        else
+        {
+            lcd.clear();
+            lcd.print("Unknown command");
+        }
+
+        stringComplete = false;
+        inputString = "";
+    }
+
+    delay(10);
 }
 
+void sendStatus()
+{
+    char buffer[200];
+    inputValue = analogRead(analogPin);
+    sprintf(buffer, "Analog input %d is %d", analogPin, inputValue);
+    lcd.print(buffer);
+}
+
+void serialEvent()
+{
+    while (Serial.available())
+    {
+        char inChar = (char)Serial.read();
+        inputString += inChar;
+        if (inChar == '\n')
+        {
+            stringComplete = true;
+        }
+    }
+}
