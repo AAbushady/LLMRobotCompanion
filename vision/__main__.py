@@ -2,8 +2,7 @@
 Vision system entry point.
 
 Usage:
-    cd /home/alexander/LLMRobotCompanion
-    python3 -m vision [--camera /dev/video0] [--fps 10] [--threshold 0.5]
+    python3 -m vision [--camera csi://0] [--fps 10] [--threshold 0.5]
                       [--log-level INFO] [--describe-interval 5]
 """
 

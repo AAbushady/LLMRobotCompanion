@@ -12,3 +12,8 @@ _deps
 cmake-build-debug/*
 cmake/*
 .idea/
+.vscode/
+__pycache__/
+*.pyc
+*.pyo
+.env

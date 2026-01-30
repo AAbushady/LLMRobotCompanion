@@ -30,5 +30,10 @@ SCENE_CHANGE_COOLDOWN = 2.0
 
 # Model path resolution — detectNet resolves models via a relative
 # "networks/" symlink that only exists in the build output directory.
-JETSON_INFERENCE_DIR = "/home/alexander/jetson-inference"
-MODEL_RESOLVE_DIR = JETSON_INFERENCE_DIR + "/build/aarch64/bin"
+# Set JETSON_INFERENCE_DIR env var to override, or defaults to ~/jetson-inference.
+import os
+JETSON_INFERENCE_DIR = os.environ.get(
+    "JETSON_INFERENCE_DIR",
+    os.path.expanduser("~/jetson-inference")
+)
+MODEL_RESOLVE_DIR = os.path.join(JETSON_INFERENCE_DIR, "build", "aarch64", "bin")
