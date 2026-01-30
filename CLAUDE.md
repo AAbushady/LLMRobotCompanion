@@ -35,7 +35,7 @@ SSD-Mobilenet-v2 only knows 91 COCO classes (person, car, dog, bottle, etc). No 
 ```
 Controller (Nano)  --->  Vision (local, jetson-inference)
     |
-    +--->  LLM Backend (swappable: Claude API or Aphrodite)
+    +--->  LLM Backend (swappable: Claude API or OpenAI-compatible)
     |
     +--->  Context Manager (tiered memory + async summarization)
     |
@@ -53,12 +53,14 @@ Four threads: main (controller loop), vision-capture, context-summarizer, (futur
 
 ## Phase 2: Controller + LLM + Context (current)
 - `controller/` package: orchestrator, swappable LLM backend, tiered context memory
-- LLM backends: Claude API (raw HTTP) and Aphrodite (OpenAI-compatible)
+- LLM backends: Claude API (raw HTTP) and OpenAI-compatible (OpenRouter, Aphrodite, vLLM, etc.)
 - Context tiers: immediate (30s), short-term (5min, summarized), long-term (compressed)
 - Reactive reasoning on person enter/leave + periodic reasoning every 30s
 - CLI: `python3 -m controller --backend claude`
 
 ## Environment Variables
 - `ANTHROPIC_API_KEY`: Claude API key (required for claude backend)
-- `APHRODITE_API_URL`: Aphrodite endpoint (required for aphrodite backend)
-- `LLM_BACKEND`: Default backend selection (`claude` or `aphrodite`)
+- `OPENAI_API_URL`: OpenAI-compatible endpoint (required for openai backend)
+- `OPENAI_API_KEY`: API key for OpenAI-compatible endpoint
+- `OPENAI_MODEL`: Model name for OpenAI-compatible endpoint
+- `LLM_BACKEND`: Default backend selection (`claude` or `openai`)

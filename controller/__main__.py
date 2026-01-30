@@ -14,7 +14,7 @@ def main():
     )
     parser.add_argument(
         "--backend", type=str, default=None,
-        help="LLM backend: claude or aphrodite (default: from LLM_BACKEND env)"
+        help="LLM backend: claude or openai (default: from LLM_BACKEND env)"
     )
     parser.add_argument(
         "--camera", type=str, default=None,

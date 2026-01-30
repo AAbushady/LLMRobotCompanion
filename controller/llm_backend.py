@@ -1,4 +1,4 @@
-"""Swappable LLM backend: abstract interface + Claude and Aphrodite implementations."""
+"""Swappable LLM backend: abstract interface + Claude and OpenAI-compatible implementations."""
 
 import abc
 import json
@@ -141,17 +141,17 @@ class ClaudeBackend(LLMBackend):
         return "\n".join(parts)
 
 
-class AphroditeBackend(LLMBackend):
-    """Aphrodite / OpenAI-compatible chat completions backend."""
+class OpenAIBackend(LLMBackend):
+    """OpenAI-compatible chat completions backend (OpenRouter, Aphrodite, vLLM, etc.)."""
 
     def __init__(self):
-        if not config.APHRODITE_API_URL:
+        if not config.OPENAI_API_URL:
             raise LLMError(
-                "APHRODITE_API_URL environment variable is not set"
+                "OPENAI_API_URL environment variable is not set"
             )
-        self._url = config.APHRODITE_API_URL
-        self._api_key = config.APHRODITE_API_KEY
-        self._model = config.APHRODITE_MODEL
+        self._url = config.OPENAI_API_URL
+        self._api_key = config.OPENAI_API_KEY
+        self._model = config.OPENAI_MODEL
 
     def complete(self, messages, system_prompt=None, max_tokens=None):
         if max_tokens is None:
@@ -189,7 +189,7 @@ class AphroditeBackend(LLMBackend):
         choices = body.get("choices", [])
         if not choices:
             raise LLMError(
-                "No choices in Aphrodite response: {}".format(
+                "No choices in OpenAI response: {}".format(
                     json.dumps(body)[:300]
                 )
             )
@@ -197,7 +197,7 @@ class AphroditeBackend(LLMBackend):
         message = choices[0].get("message", {})
         text = message.get("content", "")
         if not text:
-            raise LLMError("Empty content in Aphrodite response")
+            raise LLMError("Empty content in OpenAI response")
 
         return text
 
@@ -206,7 +206,7 @@ def create_backend(name=None):
     """Factory: create an LLM backend by name.
 
     Args:
-        name: "claude" or "aphrodite". Defaults to config.LLM_BACKEND.
+        name: "claude" or "openai". Defaults to config.LLM_BACKEND.
 
     Returns:
         LLMBackend instance.
@@ -221,7 +221,7 @@ def create_backend(name=None):
 
     if name == "claude":
         return ClaudeBackend()
-    elif name == "aphrodite":
-        return AphroditeBackend()
+    elif name == "openai":
+        return OpenAIBackend()
     else:
         raise LLMError("Unknown LLM backend: '{}'".format(name))

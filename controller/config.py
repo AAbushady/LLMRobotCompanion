@@ -16,11 +16,11 @@ CLAUDE_API_URL = "https://api.anthropic.com/v1/messages"
 CLAUDE_API_VERSION = "2023-06-01"
 
 # ---------------------------------------------------------------------------
-# Aphrodite backend (OpenAI-compatible)
+# OpenAI-compatible backend (OpenRouter, Aphrodite, vLLM, etc.)
 # ---------------------------------------------------------------------------
-APHRODITE_API_URL = os.environ.get("APHRODITE_API_URL", "")
-APHRODITE_API_KEY = os.environ.get("APHRODITE_API_KEY", "")
-APHRODITE_MODEL = os.environ.get("APHRODITE_MODEL", "default")
+OPENAI_API_URL = os.environ.get("OPENAI_API_URL", "")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "default")
 
 # ---------------------------------------------------------------------------
 # Common LLM parameters
