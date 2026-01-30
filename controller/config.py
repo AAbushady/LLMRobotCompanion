@@ -1,26 +1,81 @@
-"""Phase 2 configuration: LLM settings, memory tiers, timing, prompts."""
+"""Phase 2 configuration: LLM settings, memory tiers, timing, prompts.
+
+Priority: hardcoded defaults < .env file < environment variables.
+"""
 
 import os
 
 # ---------------------------------------------------------------------------
+# .env file loader
+# ---------------------------------------------------------------------------
+
+def _load_dotenv():
+    """Parse KEY=VALUE pairs from .env in the project root.
+
+    Skips blank lines, comments (#), and lines without '='.
+    Strips optional quotes from values.
+    """
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    dotenv_path = os.path.join(project_root, ".env")
+    result = {}
+    try:
+        with open(dotenv_path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip()
+                # Strip surrounding quotes
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+                    value = value[1:-1]
+                result[key] = value
+    except IOError:
+        pass  # No .env file is fine
+    return result
+
+
+_dotenv = _load_dotenv()
+
+
+def _get(key, default=""):
+    """Get config value: env var > .env file > default."""
+    env_val = os.environ.get(key)
+    if env_val is not None:
+        return env_val
+    return _dotenv.get(key, default)
+
+
+# ---------------------------------------------------------------------------
 # LLM backend selection
 # ---------------------------------------------------------------------------
-LLM_BACKEND = os.environ.get("LLM_BACKEND", "claude")
+LLM_BACKEND = _get("LLM_BACKEND", "claude")
 
 # ---------------------------------------------------------------------------
 # Claude backend
 # ---------------------------------------------------------------------------
-CLAUDE_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-CLAUDE_MODEL = "claude-sonnet-4-20250514"
+CLAUDE_API_KEY = _get("ANTHROPIC_API_KEY")
+CLAUDE_MODEL = _get("CLAUDE_MODEL", "claude-sonnet-4-20250514")
 CLAUDE_API_URL = "https://api.anthropic.com/v1/messages"
 CLAUDE_API_VERSION = "2023-06-01"
 
 # ---------------------------------------------------------------------------
 # OpenAI-compatible backend (OpenRouter, Aphrodite, vLLM, etc.)
 # ---------------------------------------------------------------------------
-OPENAI_API_URL = os.environ.get("OPENAI_API_URL", "")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
-OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "default")
+OPENAI_API_URL = _get("OPENAI_API_URL")
+OPENAI_API_KEY = _get("OPENAI_API_KEY")
+OPENAI_MODEL = _get("OPENAI_MODEL", "default")
+
+# ---------------------------------------------------------------------------
+# Summarizer overrides (falls back to main backend if not set)
+# ---------------------------------------------------------------------------
+SUMMARIZER_BACKEND = _get("SUMMARIZER_BACKEND")
+SUMMARIZER_API_URL = _get("SUMMARIZER_API_URL")
+SUMMARIZER_API_KEY = _get("SUMMARIZER_API_KEY")
+SUMMARIZER_MODEL = _get("SUMMARIZER_MODEL")
 
 # ---------------------------------------------------------------------------
 # Common LLM parameters

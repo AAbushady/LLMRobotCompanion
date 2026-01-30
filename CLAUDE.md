@@ -64,3 +64,7 @@ Four threads: main (controller loop), vision-capture, context-summarizer, (futur
 - `OPENAI_API_KEY`: API key for OpenAI-compatible endpoint
 - `OPENAI_MODEL`: Model name for OpenAI-compatible endpoint
 - `LLM_BACKEND`: Default backend selection (`claude` or `openai`)
+- `SUMMARIZER_BACKEND`: Summarizer backend override (falls back to `LLM_BACKEND`)
+- `SUMMARIZER_API_URL`: Summarizer endpoint override (falls back to `OPENAI_API_URL`)
+- `SUMMARIZER_API_KEY`: Summarizer API key override (falls back to `OPENAI_API_KEY`)
+- `SUMMARIZER_MODEL`: Summarizer model override (falls back to main model)

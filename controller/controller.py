@@ -5,7 +5,7 @@ import threading
 import time
 
 from . import config
-from .llm_backend import create_backend, LLMError
+from .llm_backend import create_backend, create_summarizer_backend, LLMError
 from .context_manager import ContextManager
 
 logger = logging.getLogger(__name__)
@@ -60,8 +60,16 @@ class Controller(object):
             self._llm_backend = create_backend()
         logger.info("LLM backend: %s", type(self._llm_backend).__name__)
 
+        # Summarizer backend (separate cheaper model, or same as main)
+        summarizer = create_summarizer_backend()
+        if summarizer:
+            logger.info("Summarizer backend: %s", type(summarizer).__name__)
+        else:
+            logger.info("Summarizer using main backend")
+            summarizer = self._llm_backend
+
         # Context manager
-        self._context_mgr = ContextManager(self._llm_backend)
+        self._context_mgr = ContextManager(summarizer)
         self._context_mgr.start()
 
         # Vision system (deferred import — jetson-inference may not be available)

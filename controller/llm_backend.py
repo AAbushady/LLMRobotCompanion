@@ -86,13 +86,13 @@ class LLMBackend(abc.ABC):
 class ClaudeBackend(LLMBackend):
     """Claude Messages API backend via raw HTTP."""
 
-    def __init__(self):
+    def __init__(self, model=None):
         if not config.CLAUDE_API_KEY:
             raise LLMError(
                 "ANTHROPIC_API_KEY environment variable is not set"
             )
         self._api_key = config.CLAUDE_API_KEY
-        self._model = config.CLAUDE_MODEL
+        self._model = model or config.CLAUDE_MODEL
         self._url = config.CLAUDE_API_URL
         self._version = config.CLAUDE_API_VERSION
 
@@ -144,14 +144,14 @@ class ClaudeBackend(LLMBackend):
 class OpenAIBackend(LLMBackend):
     """OpenAI-compatible chat completions backend (OpenRouter, Aphrodite, vLLM, etc.)."""
 
-    def __init__(self):
-        if not config.OPENAI_API_URL:
+    def __init__(self, api_url=None, api_key=None, model=None):
+        self._url = api_url or config.OPENAI_API_URL
+        if not self._url:
             raise LLMError(
                 "OPENAI_API_URL environment variable is not set"
             )
-        self._url = config.OPENAI_API_URL
-        self._api_key = config.OPENAI_API_KEY
-        self._model = config.OPENAI_MODEL
+        self._api_key = api_key if api_key is not None else config.OPENAI_API_KEY
+        self._model = model or config.OPENAI_MODEL
 
     def complete(self, messages, system_prompt=None, max_tokens=None):
         if max_tokens is None:
@@ -225,3 +225,41 @@ def create_backend(name=None):
         return OpenAIBackend()
     else:
         raise LLMError("Unknown LLM backend: '{}'".format(name))
+
+
+def create_summarizer_backend():
+    """Create a separate LLM backend for summarization.
+
+    Returns None if no summarizer-specific config is set, meaning
+    the caller should reuse the main backend.
+
+    Each setting falls back to the main backend's value when not set:
+        SUMMARIZER_BACKEND  -> LLM_BACKEND
+        SUMMARIZER_API_URL  -> OPENAI_API_URL
+        SUMMARIZER_API_KEY  -> OPENAI_API_KEY
+        SUMMARIZER_MODEL    -> CLAUDE_MODEL / OPENAI_MODEL
+    """
+    has_custom = (
+        config.SUMMARIZER_BACKEND
+        or config.SUMMARIZER_MODEL
+        or config.SUMMARIZER_API_URL
+    )
+    if not has_custom:
+        return None
+
+    backend_name = (
+        config.SUMMARIZER_BACKEND or config.LLM_BACKEND
+    ).lower().strip()
+
+    model = config.SUMMARIZER_MODEL or None
+
+    if backend_name == "claude":
+        return ClaudeBackend(model=model)
+    elif backend_name == "openai":
+        return OpenAIBackend(
+            api_url=config.SUMMARIZER_API_URL or None,
+            api_key=config.SUMMARIZER_API_KEY or None,
+            model=model,
+        )
+    else:
+        raise LLMError("Unknown summarizer backend: '{}'".format(backend_name))
