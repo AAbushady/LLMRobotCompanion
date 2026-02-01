@@ -32,8 +32,28 @@ SCENE_CHANGE_COOLDOWN = 2.0
 # "networks/" symlink that only exists in the build output directory.
 # Set JETSON_INFERENCE_DIR env var to override, or defaults to ~/jetson-inference.
 import os
+import sys
+
 JETSON_INFERENCE_DIR = os.environ.get(
     "JETSON_INFERENCE_DIR",
     os.path.expanduser("~/jetson-inference")
 )
 MODEL_RESOLVE_DIR = os.path.join(JETSON_INFERENCE_DIR, "build", "aarch64", "bin")
+
+# Add jetson-inference Python paths to sys.path so the deferred
+# `import jetson_inference` works without special PYTHONPATH setup.
+_JETSON_PYTHON_PATHS = [
+    os.path.join(JETSON_INFERENCE_DIR, "build", "aarch64", "lib", "python", "3.6"),
+    os.path.join(JETSON_INFERENCE_DIR, "python", "python"),
+    os.path.join(JETSON_INFERENCE_DIR, "utils", "python", "python"),
+]
+for _p in _JETSON_PYTHON_PATHS:
+    if os.path.isdir(_p) and _p not in sys.path:
+        sys.path.insert(0, _p)
+
+# Ensure native shared libraries are findable at runtime.
+_JETSON_LIB_DIR = os.path.join(JETSON_INFERENCE_DIR, "build", "aarch64", "lib")
+if os.path.isdir(_JETSON_LIB_DIR):
+    _ld = os.environ.get("LD_LIBRARY_PATH", "")
+    if _JETSON_LIB_DIR not in _ld:
+        os.environ["LD_LIBRARY_PATH"] = _JETSON_LIB_DIR + (":" + _ld if _ld else "")
