@@ -11,8 +11,14 @@
 - CUDA 10.2, TensorRT 8.2.1, OpenCV 4.1.1
 - NumPy 1.13.3
 - No sudo access for the claude session
+- No `gh` CLI — use GitHub API via curl with token from `~/.git-credentials`
 - No VPI 2.0 (only VPI 1.2.3 available, not compatible)
 - No f-string `=`, no dataclasses, no walrus operator (Python 3.6)
+
+## Git Workflow
+- Default branch: `Production`
+- All feature branches are based off `Development`
+- PRs target `Development`, not `Production`
 
 ## Build (jetson-inference)
 - Built from source with Python 3.6 bindings enabled
@@ -51,12 +57,47 @@ Four threads: main (controller loop), vision-capture, context-summarizer, (futur
 - Scene describer: human-readable text for LLM consumption
 - CLI: `python3 -m vision`
 
-## Phase 2: Controller + LLM + Context (current)
+## Phase 2: Controller + LLM + Context (complete)
 - `controller/` package: orchestrator, swappable LLM backend, tiered context memory
 - LLM backends: Claude API (raw HTTP) and OpenAI-compatible (OpenRouter, Aphrodite, vLLM, etc.)
 - Context tiers: immediate (30s), short-term (5min, summarized), long-term (compressed)
 - Reactive reasoning on person enter/leave + periodic reasoning every 30s
 - CLI: `python3 -m controller --backend claude`
+
+## Phase 3: Vision Enhancement, Terminal UI, Interactive Input, Memory (current)
+
+### 3A: Vision Enhancement
+- GoogleNet ROI classification on detected objects (1000 ImageNet classes)
+- `cudaCrop()` each detection bbox, classify with `imageNet("googlenet")`
+- `display_name` field on tracked objects: richer labels like "wine bottle" instead of "bottle"
+- Configurable via `vision/config.py`: `CLASSIFICATION_ENABLED`, threshold, min bbox size
+
+### 3B: Terminal UI (urwid)
+- `controller/terminal_ui.py`: urwid-based live display
+- Layout: scene panel (top), conversation log (middle, scrollable), input line (bottom), status bar
+- Thread-safe updates via `urwid.watch_pipe()` — background threads write to pipe, urwid drains on main
+- Controller runs in background thread (`start_background(ui=)`), urwid owns main thread
+- `--headless` flag for log-only mode (backward compat)
+- UI mode logs to `companion.log` instead of stderr
+
+### 3C: Interactive Input
+- Type messages in terminal UI, model responds using visual context
+- `USER_REASONING_PROMPT` for conversational responses
+- User messages and robot responses stored in context with importance scoring
+- `controller.on_user_input()` → queue → controller thread → LLM reasoning
+
+### 3D: Memory Improvements
+- Importance-weighted budget fitting: user messages (3) > person events (2) > object events (1) > scenes (0)
+- Facts tier: persistent strings (max 20) that survive all summarization
+- `extract_facts()`: LLM extracts memorable facts from conversation exchanges
+- High-importance entries (>=2) skip summarization, preserved with original text in short-term
+- `build_context()` includes `[Known facts]` section before `[Right now]`
+- Token budget: facts 10%, immediate 45%, short-term 25%, long-term 20%
+
+### CLI
+- `python3 -m controller --backend openai` — UI mode (default)
+- `python3 -m controller --headless --backend openai` — headless mode
+- `python3 -m controller --backend openai --log-level DEBUG` — verbose logging
 
 ## Environment Variables
 - `ANTHROPIC_API_KEY`: Claude API key (required for claude backend)

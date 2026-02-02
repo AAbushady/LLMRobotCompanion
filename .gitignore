@@ -16,4 +16,5 @@ cmake/*
 __pycache__/
 *.pyc
 *.pyo
+*.log
 .env
