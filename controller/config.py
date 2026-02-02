@@ -106,10 +106,14 @@ COMPRESS_INTERVAL = 60.0  # seconds between compression runs
 # Token budget
 # ---------------------------------------------------------------------------
 TOKEN_BUDGET_TOTAL = 3000
-TOKEN_BUDGET_IMMEDIATE_RATIO = 0.50
-TOKEN_BUDGET_SHORT_TERM_RATIO = 0.30
+TOKEN_BUDGET_FACTS_RATIO = 0.10
+TOKEN_BUDGET_IMMEDIATE_RATIO = 0.45
+TOKEN_BUDGET_SHORT_TERM_RATIO = 0.25
 TOKEN_BUDGET_LONG_TERM_RATIO = 0.20
 CHARS_PER_TOKEN = 4  # rough estimate
+
+# Facts tier
+FACTS_MAX_ENTRIES = 20
 
 # ---------------------------------------------------------------------------
 # Controller timing
@@ -140,4 +144,18 @@ COMPRESS_PROMPT = (
     "Compress the following summaries into one brief sentence capturing the overall "
     "situation and any important patterns. Drop timestamps and minor details. "
     "Output only the compressed sentence."
+)
+
+USER_REASONING_PROMPT = (
+    "You are a robot companion observing the world through a camera. "
+    "A person is talking to you. Answer using what you see and remember. "
+    "Be conversational, friendly, and concise (1-3 sentences). "
+    "Refer to things you can see in the scene when relevant."
+)
+
+FACT_EXTRACTION_PROMPT = (
+    "Extract persistent facts worth remembering from this conversation exchange. "
+    "Only extract facts about the person, their preferences, or important context "
+    "that would be useful to remember across conversations. "
+    "Output one fact per line. If nothing worth remembering, output 'none'."
 )

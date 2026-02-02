@@ -6,6 +6,7 @@ from .llm_backend import (
     create_backend, create_summarizer_backend,
 )
 from .context_manager import ContextManager
+from .terminal_ui import TerminalUI
 
 __all__ = [
     "Controller",
@@ -15,4 +16,5 @@ __all__ = [
     "create_backend",
     "create_summarizer_backend",
     "ContextManager",
+    "TerminalUI",
 ]

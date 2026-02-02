@@ -86,8 +86,9 @@ def describe_scene(world_state, event_bus=None):
         conf_pct = int(obj["confidence"] * 100)
         duration = now - obj["first_seen"]
         dur_str = _format_duration(duration)
+        name = obj.get("display_name", obj["class_name"])
         desc = "A {} in the {} area ({}%, {})".format(
-            obj["class_name"], zone, conf_pct, dur_str)
+            name, zone, conf_pct, dur_str)
         descriptions.append(desc)
 
     result = header + ": " + ". ".join(descriptions) + "."

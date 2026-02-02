@@ -25,6 +25,8 @@ class VisionSystem(object):
         self._frame_interval = 1.0 / self._target_fps
 
         self._net = None
+        self._classifier = None
+        self._cudaCrop = None
         self._camera = None
         self._world_state = None
         self._event_bus = None
@@ -65,8 +67,10 @@ class VisionSystem(object):
                            config.MODEL_RESOLVE_DIR, e)
 
         try:
-            from jetson_inference import detectNet
+            from jetson_inference import detectNet, imageNet
             from jetson_utils import videoSource
+            from jetson_utils import cudaCrop as _cudaCrop
+            self._cudaCrop = _cudaCrop
 
             logger.info("Loading detection network '%s' (threshold=%.2f)...",
                         config.DETECTION_NETWORK, self._threshold)
@@ -87,6 +91,15 @@ class VisionSystem(object):
                             config.TRACKER_MIN_FRAMES,
                             config.TRACKER_DROP_FRAMES,
                             config.TRACKER_OVERLAP_THRESHOLD)
+
+            if config.CLASSIFICATION_ENABLED:
+                logger.info("Loading classification network '%s'...",
+                            config.CLASSIFICATION_NETWORK)
+                self._classifier = imageNet(config.CLASSIFICATION_NETWORK)
+                logger.info(
+                    "Classification network loaded (%d classes)",
+                    self._classifier.GetNumClasses()
+                )
 
             logger.info("Opening camera: %s", self._camera_source)
             self._camera = videoSource(self._camera_source)
@@ -134,6 +147,7 @@ class VisionSystem(object):
 
         self._camera = None
         self._net = None
+        self._classifier = None
 
         if self._event_bus is not None:
             self._event_bus.emit(VISION_STOPPED, {})
@@ -169,12 +183,37 @@ class VisionSystem(object):
 
                 detections = self._net.Detect(img, overlay=config.DETECTION_OVERLAY)
 
+                # Classify ROIs with imageNet for richer labels
+                classifications = {}
+                if self._classifier is not None:
+                    for det in detections:
+                        if det.TrackID < 0 or det.TrackStatus < 0:
+                            continue
+                        w = det.Right - det.Left
+                        h = det.Bottom - det.Top
+                        if w < config.CLASSIFICATION_MIN_BBOX_SIZE or \
+                           h < config.CLASSIFICATION_MIN_BBOX_SIZE:
+                            continue
+                        try:
+                            roi = self._cudaCrop(img, (det.Left, det.Top,
+                                                       det.Right, det.Bottom))
+                            class_id, confidence = self._classifier.Classify(roi)
+                            if confidence >= config.CLASSIFICATION_THRESHOLD:
+                                label = self._classifier.GetClassDesc(class_id)
+                                classifications[det.TrackID] = {
+                                    "label": label,
+                                    "confidence": confidence,
+                                }
+                        except Exception:
+                            pass  # skip failed crops
+
                 self._world_state.update(
                     detections,
                     self._net,
                     self._event_bus,
                     frame_width=img.width,
-                    frame_height=img.height
+                    frame_height=img.height,
+                    classifications=classifications,
                 )
 
             except Exception as e:

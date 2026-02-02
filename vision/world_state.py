@@ -19,7 +19,8 @@ class WorldState(object):
         self._last_scene_change = 0.0
         self._object_count_prev = 0
 
-    def update(self, detections, net, event_bus, frame_width=0, frame_height=0):
+    def update(self, detections, net, event_bus, frame_width=0, frame_height=0,
+               classifications=None):
         """
         Process detections from net.Detect(), update tracked objects, fire events.
 
@@ -29,7 +30,11 @@ class WorldState(object):
             event_bus: EventBus to emit events on
             frame_width: frame width in pixels
             frame_height: frame height in pixels
+            classifications: optional dict {track_id: {"label", "confidence"}}
+                from imageNet ROI classification
         """
+        if classifications is None:
+            classifications = {}
         now = time.time()
 
         if frame_width > 0:
@@ -56,6 +61,10 @@ class WorldState(object):
                 bbox = (det.Left, det.Top, det.Right, det.Bottom)
                 status = "active" if det.TrackStatus == 1 else "initializing"
 
+                # Resolve display_name from classification or COCO label
+                cls_info = classifications.get(tid)
+                display_name = cls_info["label"] if cls_info else class_name
+
                 if tid in self._objects:
                     obj = self._objects[tid]
                     old_center = obj["center"]
@@ -65,6 +74,8 @@ class WorldState(object):
                     obj["center"] = center
                     obj["last_seen"] = now
                     obj["status"] = status
+                    if cls_info:
+                        obj["display_name"] = display_name
 
                     if status == "active":
                         dx = center[0] - old_center[0]
@@ -73,7 +84,8 @@ class WorldState(object):
                         if dist >= config.MOVEMENT_THRESHOLD:
                             events_to_fire.append((
                                 OBJECT_MOVED,
-                                {"track_id": tid, "class_name": class_name,
+                                {"track_id": tid,
+                                 "class_name": obj.get("display_name", class_name),
                                  "distance": round(dist, 1),
                                  "from": old_center, "to": center}
                             ))
@@ -82,6 +94,7 @@ class WorldState(object):
                         "track_id": tid,
                         "class_id": class_id,
                         "class_name": class_name,
+                        "display_name": display_name,
                         "confidence": det.Confidence,
                         "bbox": bbox,
                         "center": center,
@@ -94,7 +107,7 @@ class WorldState(object):
                         evt_type = PERSON_ENTERED if class_id == config.PERSON_CLASS_ID else OBJECT_APPEARED
                         events_to_fire.append((
                             evt_type,
-                            {"track_id": tid, "class_name": class_name,
+                            {"track_id": tid, "class_name": display_name,
                              "confidence": round(det.Confidence, 2)}
                         ))
 
@@ -107,7 +120,8 @@ class WorldState(object):
                         evt_type = PERSON_LEFT if obj["class_id"] == config.PERSON_CLASS_ID else OBJECT_DISAPPEARED
                         events_to_fire.append((
                             evt_type,
-                            {"track_id": tid, "class_name": obj["class_name"],
+                            {"track_id": tid,
+                             "class_name": obj.get("display_name", obj["class_name"]),
                              "duration": round(now - obj["first_seen"], 1)}
                         ))
 
