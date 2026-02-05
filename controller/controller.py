@@ -333,11 +333,18 @@ class Controller(object):
                 continue
 
             self._reasoning_busy.set()
+            use_streaming = config.STREAMING_ENABLED and self._ui is not None
             try:
-                if request["kind"] == "user":
-                    result = self._execute_user_reasoning(request)
+                if use_streaming:
+                    if request["kind"] == "user":
+                        result = self._execute_user_reasoning_streaming(request)
+                    else:
+                        result = self._execute_reasoning_streaming(request)
                 else:
-                    result = self._execute_reasoning(request)
+                    if request["kind"] == "user":
+                        result = self._execute_user_reasoning(request)
+                    else:
+                        result = self._execute_reasoning(request)
                 self._reasoning_results.put(result)
             except Exception:
                 logger.error("Reasoning worker error", exc_info=True)
@@ -452,6 +459,84 @@ class Controller(object):
                 "error": str(exc),
             }
 
+    def _execute_reasoning_streaming(self, request):
+        """Run periodic/reactive reasoning with streaming. Called on the worker thread."""
+        trigger = request["trigger"]
+        context = request["context"]
+
+        self._send_ui("stream_start", "")
+        try:
+            prompt = "{}\n\nTrigger: {}\n\n{}".format(
+                config.REASONING_PROMPT, trigger, context
+            )
+            chunks = []
+            for chunk in self._llm_backend.stream_complete(
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=config.LLM_MAX_TOKENS,
+            ):
+                chunks.append(chunk)
+                self._send_ui("stream_chunk", chunk)
+            self._send_ui("stream_end", "")
+            return {
+                "kind": request["kind"],
+                "response": "".join(chunks).strip(),
+                "user_text": "",
+                "error": None,
+                "streamed": True,
+            }
+        except LLMError as exc:
+            self._send_ui("stream_end", "")
+            return {
+                "kind": request["kind"],
+                "response": "",
+                "user_text": "",
+                "error": str(exc),
+                "streamed": True,
+            }
+
+    def _execute_user_reasoning_streaming(self, request):
+        """Run user reasoning with streaming. Called on the worker thread."""
+        text = request["user_text"]
+        context = request["context"]
+
+        self._send_ui("stream_start", "")
+        try:
+            prompt = "{}\n\nThe person said: \"{}\"\n\n{}".format(
+                config.USER_REASONING_PROMPT, text, context
+            )
+            chunks = []
+            for chunk in self._llm_backend.stream_complete(
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=config.LLM_MAX_TOKENS,
+            ):
+                chunks.append(chunk)
+                self._send_ui("stream_chunk", chunk)
+            self._send_ui("stream_end", "")
+            response_text = "".join(chunks).strip()
+
+            # Queue fact extraction on the summarizer thread
+            exchange = "User said: \"{}\"\nYou replied: \"{}\"".format(
+                text, response_text
+            )
+            self._context_mgr.queue_fact_extraction(exchange)
+
+            return {
+                "kind": "user",
+                "response": response_text,
+                "user_text": text,
+                "error": None,
+                "streamed": True,
+            }
+        except LLMError as exc:
+            self._send_ui("stream_end", "")
+            return {
+                "kind": "user",
+                "response": "",
+                "user_text": text,
+                "error": str(exc),
+                "streamed": True,
+            }
+
     def _deliver_reasoning_result(self, result):
         """Process a completed reasoning result on the main thread."""
         kind = result["kind"]
@@ -467,7 +552,10 @@ class Controller(object):
             return
 
         logger.info("LLM response [%s]: %s", kind, response_text)
-        self._send_ui("response", response_text)
+
+        # Skip UI send if already streamed to the terminal
+        if not result.get("streamed", False):
+            self._send_ui("response", response_text)
 
         self._context_mgr.add_response(response_text)
 

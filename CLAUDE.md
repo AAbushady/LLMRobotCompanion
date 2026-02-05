@@ -103,6 +103,15 @@ Five threads: main (controller loop), vision-capture, context-summarizer, reason
 - "Thinking..." indicator in status bar while LLM call is in-flight
 - Fact extraction offloaded to summarizer thread via `queue_fact_extraction()`
 
+### 3F: Streaming LLM Responses
+- `stream_complete()` generator on both Claude and OpenAI backends, parses SSE (server-sent events)
+- Tokens stream to terminal UI in real-time via `stream_start`/`stream_chunk`/`stream_end` pipe messages
+- `_streaming_widget`: urwid Text widget updated in-place as chunks arrive
+- Reasoning worker selects streaming path when `STREAMING_ENABLED` and UI is attached
+- Headless mode falls back to non-streaming `complete()`
+- `_retry_loop_stream()`: retry variant that returns response with body unconsumed for streaming
+- Configurable via `controller/config.py`: `STREAMING_ENABLED` (default True)
+
 ### CLI
 - `python3 -m controller --backend openai` — UI mode (default)
 - `python3 -m controller --headless --backend openai` — headless mode
@@ -118,3 +127,8 @@ Five threads: main (controller loop), vision-capture, context-summarizer, reason
 - `SUMMARIZER_API_URL`: Summarizer endpoint override (falls back to `OPENAI_API_URL`)
 - `SUMMARIZER_API_KEY`: Summarizer API key override (falls back to `OPENAI_API_KEY`)
 - `SUMMARIZER_MODEL`: Summarizer model override (falls back to main model)
+
+## Testing
+- Unit tests: `python3 test_streaming.py` — mocked HTTP layer, no live API calls needed
+- Tests cover: SSE parsing (Claude + OpenAI), retry logic, controller streaming flow, UI message dispatch
+- Python 3.6 compatible — uses `unittest` + `unittest.mock`

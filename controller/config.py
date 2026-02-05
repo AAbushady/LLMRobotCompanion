@@ -84,6 +84,7 @@ LLM_MAX_TOKENS = 500
 LLM_TEMPERATURE = 0.7
 LLM_TIMEOUT = 30
 LLM_RETRIES = 2
+STREAMING_ENABLED = True  # stream LLM tokens to UI; disable for incompatible backends
 
 # ---------------------------------------------------------------------------
 # Context manager -- memory tiers

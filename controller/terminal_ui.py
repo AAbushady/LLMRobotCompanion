@@ -23,6 +23,9 @@ MSG_RESPONSE = "response"
 MSG_USER = "user"
 MSG_STATUS = "status"
 MSG_ERROR = "error"
+MSG_STREAM_START = "stream_start"
+MSG_STREAM_CHUNK = "stream_chunk"
+MSG_STREAM_END = "stream_end"
 
 MAX_CONVERSATION_LINES = 200
 
@@ -47,6 +50,7 @@ class TerminalUI(object):
         # Pending messages from background threads
         self._pending_lock = threading.Lock()
         self._pending = []
+        self._streaming_widget = None
 
         # -- Widgets --------------------------------------------------------
 
@@ -182,6 +186,22 @@ class TerminalUI(object):
             elif msg_type == MSG_USER:
                 ts = time.strftime("%H:%M:%S")
                 self._append_conv("[{} You] {}".format(ts, text))
+            elif msg_type == MSG_STREAM_START:
+                ts = time.strftime("%H:%M:%S")
+                widget = urwid.Text("[{} Robot] ".format(ts))
+                self._conv_walker.append(widget)
+                # Cap history
+                while len(self._conv_walker) > MAX_CONVERSATION_LINES:
+                    self._conv_walker.pop(0)
+                self._conv_walker.set_focus(len(self._conv_walker) - 1)
+                self._streaming_widget = widget
+            elif msg_type == MSG_STREAM_CHUNK:
+                if self._streaming_widget is not None:
+                    current = self._streaming_widget.get_text()[0]
+                    self._streaming_widget.set_text(current + text)
+                    self._conv_walker.set_focus(len(self._conv_walker) - 1)
+            elif msg_type == MSG_STREAM_END:
+                self._streaming_widget = None
         return True
 
     def _append_conv(self, text):
