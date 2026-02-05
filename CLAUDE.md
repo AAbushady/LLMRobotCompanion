@@ -19,6 +19,7 @@
 - Default branch: `Production`
 - All feature branches are based off `Development`
 - PRs target `Development`, not `Production`
+- Merge strategy: squash merge, delete feature branch after merge
 
 ## Build (jetson-inference)
 - Built from source with Python 3.6 bindings enabled
@@ -48,7 +49,7 @@ Controller (Nano)  --->  Vision (local, jetson-inference)
     +--->  (Future) Arduino serial for hardware control
 ```
 
-Four threads: main (controller loop), vision-capture, context-summarizer, (future) serial.
+Five threads: main (controller loop), vision-capture, context-summarizer, reasoning-worker, (future) serial.
 
 ## Phase 1: Vision System (complete)
 - `vision/` package: camera capture, SSD-Mobilenet-v2 detection, IOU tracking
@@ -84,15 +85,23 @@ Four threads: main (controller loop), vision-capture, context-summarizer, (futur
 - Type messages in terminal UI, model responds using visual context
 - `USER_REASONING_PROMPT` for conversational responses
 - User messages and robot responses stored in context with importance scoring
-- `controller.on_user_input()` → queue → controller thread → LLM reasoning
+- `controller.on_user_input()` → queue → controller thread → reasoning-worker thread (async)
 
 ### 3D: Memory Improvements
 - Importance-weighted budget fitting: user messages (3) > person events (2) > object events (1) > scenes (0)
 - Facts tier: persistent strings (max 20) that survive all summarization
-- `extract_facts()`: LLM extracts memorable facts from conversation exchanges
+- `queue_fact_extraction()`: non-blocking enqueue, LLM extraction runs on summarizer thread
 - High-importance entries (>=2) skip summarization, preserved with original text in short-term
 - `build_context()` includes `[Known facts]` section before `[Right now]`
 - Token budget: facts 10%, immediate 45%, short-term 25%, long-term 20%
+
+### 3E: Async Reasoning Worker
+- All LLM reasoning calls (periodic, reactive, user) run on a dedicated `reasoning-worker` thread
+- Main loop stays responsive at 2Hz — scene updates, input, status bar unblocked during LLM calls
+- Request/result queues between main loop and worker (`queue.Queue`)
+- Concurrency policy: user input always queued, periodic/reactive dropped when busy, stale requests (>10s) discarded
+- "Thinking..." indicator in status bar while LLM call is in-flight
+- Fact extraction offloaded to summarizer thread via `queue_fact_extraction()`
 
 ### CLI
 - `python3 -m controller --backend openai` — UI mode (default)
