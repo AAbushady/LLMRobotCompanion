@@ -242,6 +242,7 @@ class ClaudeBackend(LLMBackend):
             )
 
         response = self._retry_loop_stream(do_request)
+        response.encoding = "utf-8"
         got_text = False
         try:
             for line in response.iter_lines(decode_unicode=True):
@@ -365,6 +366,7 @@ class OpenAIBackend(LLMBackend):
             )
 
         response = self._retry_loop_stream(do_request)
+        response.encoding = "utf-8"
         got_text = False
         try:
             for line in response.iter_lines(decode_unicode=True):
