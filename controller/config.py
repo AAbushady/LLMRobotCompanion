@@ -122,6 +122,10 @@ SCENE_POLL_INTERVAL = 2.0  # seconds between scene description polls
 PERIODIC_REASONING_INTERVAL = 30.0  # seconds between periodic reasoning
 REACTIVE_COOLDOWN = 5.0  # minimum seconds between reactive reasoning calls
 
+# Reasoning worker
+REASONING_STALE_THRESHOLD = 10.0  # drop requests older than this (seconds)
+REASONING_QUEUE_SIZE = 2           # max queued reasoning requests
+
 # ---------------------------------------------------------------------------
 # System prompts
 # ---------------------------------------------------------------------------

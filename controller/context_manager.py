@@ -53,6 +53,9 @@ class ContextManager(object):
         # Long-term tier: list of {"timestamp", "text"}
         self._long_term = []
 
+        # Pending fact extraction requests (drained by summarizer thread)
+        self._fact_queue = collections.deque(maxlen=5)
+
         # Summarization thread
         self._thread = None
         self._stop_event = threading.Event()
@@ -148,10 +151,18 @@ class ContextManager(object):
                 self._facts.pop(0)
         logger.debug("Fact added: %s", fact)
 
-    def extract_facts(self, exchange_text):
+    def queue_fact_extraction(self, exchange_text):
+        """Queue a fact extraction request for the summarizer thread.
+
+        Non-blocking.  Called from the reasoning worker thread.
+        """
+        with self._lock:
+            self._fact_queue.append(exchange_text)
+
+    def _extract_facts_sync(self, exchange_text):
         """Ask the LLM to extract persistent facts from a conversation exchange.
 
-        Runs synchronously on the calling thread (controller thread).
+        Runs on the summarizer thread.
         """
         try:
             result = self._llm.complete(
@@ -379,12 +390,20 @@ class ContextManager(object):
     # ------------------------------------------------------------------
 
     def _summarization_loop(self):
-        """Background loop: summarize immediate->short-term, compress short-term->long-term."""
+        """Background loop: extract facts, summarize, compress."""
         last_summarize = time.time()
         last_compress = time.time()
 
         while not self._stop_event.is_set():
             now = time.time()
+
+            # Drain fact extraction queue (fast, low-token calls)
+            while True:
+                with self._lock:
+                    if not self._fact_queue:
+                        break
+                    exchange = self._fact_queue.popleft()
+                self._extract_facts_sync(exchange)
 
             # Summarize: drain old immediate entries -> short-term
             if now - last_summarize >= config.SUMMARIZE_INTERVAL:

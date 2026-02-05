@@ -61,6 +61,12 @@ class Controller(object):
         self._reactive_lock = threading.Lock()
         self._last_reactive_time = 0.0
 
+        # Reasoning worker (async LLM calls)
+        self._reasoning_queue = queue.Queue(maxsize=config.REASONING_QUEUE_SIZE)
+        self._reasoning_results = queue.Queue()
+        self._reasoning_busy = threading.Event()
+        self._reasoning_thread = None
+
         # Controller thread (for background mode)
         self._thread = None
 
@@ -86,6 +92,15 @@ class Controller(object):
         # Context manager
         self._context_mgr = ContextManager(summarizer)
         self._context_mgr.start()
+
+        # Reasoning worker thread
+        self._reasoning_thread = threading.Thread(
+            target=self._reasoning_worker,
+            name="reasoning-worker",
+            daemon=True,
+        )
+        self._reasoning_thread.start()
+        logger.info("Reasoning worker started")
 
         # Vision system (deferred import -- jetson-inference may not be available)
         try:
@@ -212,6 +227,14 @@ class Controller(object):
                 except queue.Empty:
                     break
 
+            # Drain reasoning results
+            while True:
+                try:
+                    result = self._reasoning_results.get_nowait()
+                    self._deliver_reasoning_result(result)
+                except queue.Empty:
+                    break
+
             # Poll scene description
             if now - last_scene_poll >= config.SCENE_POLL_INTERVAL:
                 last_scene_poll = now
@@ -234,13 +257,14 @@ class Controller(object):
 
                 if trigger and (now - self._last_reactive_time >= config.REACTIVE_COOLDOWN):
                     self._last_reactive_time = now
-                    self._do_reasoning("reactive: {}".format(trigger))
+                    self._enqueue_reasoning("reactive",
+                                            "reactive: {}".format(trigger))
 
             # Periodic reasoning
             if now - last_periodic >= config.PERIODIC_REASONING_INTERVAL:
                 last_periodic = now
                 if last_scene_text and "empty" not in last_scene_text.lower():
-                    self._do_reasoning("periodic")
+                    self._enqueue_reasoning("periodic", "periodic")
 
             # Update status bar
             if self._ui is not None and now - last_status_update >= 2.0:
@@ -261,10 +285,11 @@ class Controller(object):
         logger.info("Main loop exited")
 
     def _handle_user_input(self, text):
-        """Process a user message: add to context and trigger reasoning."""
+        """Process a user message: add to context and enqueue reasoning."""
         logger.info("User input: %s", text)
         self._context_mgr.add_user_message(text)
-        self._do_user_reasoning(text)
+        self._send_ui("status", "Thinking...")
+        self._enqueue_reasoning("user", "user_input", user_text=text)
 
     def _on_vision_event(self, event):
         """Vision event callback. Runs on the vision thread -- must be fast.
@@ -288,83 +313,176 @@ class Controller(object):
                 self._reactive_trigger = etype
             self._reactive_flag.set()
 
-    def _do_reasoning(self, trigger):
-        """Build context, send to LLM, log and display the response."""
-        logger.info("Reasoning triggered: %s", trigger)
+    # ------------------------------------------------------------------
+    # Reasoning worker (async LLM calls)
+    # ------------------------------------------------------------------
+
+    def _reasoning_worker(self):
+        """Background thread: process LLM reasoning requests."""
+        while not self._stop_event.is_set():
+            try:
+                request = self._reasoning_queue.get(timeout=1.0)
+            except queue.Empty:
+                continue
+
+            # Drop stale requests (context snapshot would be outdated)
+            age = time.time() - request["enqueued_at"]
+            if age > config.REASONING_STALE_THRESHOLD:
+                logger.info("Dropping stale %s request (%.1fs old)",
+                            request["kind"], age)
+                continue
+
+            self._reasoning_busy.set()
+            try:
+                if request["kind"] == "user":
+                    result = self._execute_user_reasoning(request)
+                else:
+                    result = self._execute_reasoning(request)
+                self._reasoning_results.put(result)
+            except Exception:
+                logger.error("Reasoning worker error", exc_info=True)
+                self._reasoning_results.put({
+                    "kind": request["kind"],
+                    "response": "",
+                    "user_text": request.get("user_text", ""),
+                    "error": "Unexpected reasoning error",
+                })
+            finally:
+                self._reasoning_busy.clear()
+
+        logger.info("Reasoning worker exited")
+
+    def _enqueue_reasoning(self, kind, trigger, user_text=""):
+        """Build context and submit a reasoning request to the worker.
+
+        User requests are always queued.  Periodic/reactive requests are
+        dropped if the worker is busy or the queue is full.
+        """
+        context = self._context_mgr.build_context()
+        if not context.strip():
+            logger.debug("Empty context, skipping %s reasoning", kind)
+            return False
+
+        request = {
+            "kind": kind,
+            "trigger": trigger,
+            "user_text": user_text,
+            "context": context,
+            "enqueued_at": time.time(),
+        }
+
+        if kind == "user":
+            try:
+                self._reasoning_queue.put(request, timeout=1.0)
+                return True
+            except queue.Full:
+                logger.warning("Reasoning queue full, user request dropped")
+                self._send_ui("error", "Busy, please try again")
+                return False
+        else:
+            if self._reasoning_busy.is_set():
+                logger.debug("Reasoning busy, dropping %s trigger", kind)
+                return False
+            try:
+                self._reasoning_queue.put_nowait(request)
+                return True
+            except queue.Full:
+                logger.debug("Reasoning queue full, dropping %s trigger", kind)
+                return False
+
+    def _execute_reasoning(self, request):
+        """Run periodic/reactive reasoning. Called on the worker thread."""
+        trigger = request["trigger"]
+        context = request["context"]
 
         try:
-            context = self._context_mgr.build_context()
-            if not context.strip():
-                logger.debug("Empty context, skipping reasoning")
-                return
-
             prompt = "{}\n\nTrigger: {}\n\n{}".format(
                 config.REASONING_PROMPT, trigger, context
             )
-
             response = self._llm_backend.complete(
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=config.LLM_MAX_TOKENS,
             )
-
-            response_text = response.strip()
-            logger.info("LLM response [%s]: %s", trigger, response_text)
-            self._send_ui("response", response_text)
-
-            # Store response in context for continuity
-            self._context_mgr.add_response(response_text)
-
-            stats = self._context_mgr.get_stats()
-            logger.debug(
-                "Context stats: immediate=%d, short_term=%d, long_term=%d",
-                stats["immediate"], stats["short_term"], stats["long_term"]
-            )
-
+            return {
+                "kind": request["kind"],
+                "response": response.strip(),
+                "user_text": "",
+                "error": None,
+            }
         except LLMError as exc:
-            logger.error("Reasoning failed [%s]: %s", trigger, exc)
-            self._send_ui("error", "LLM error: {}".format(exc))
-        except Exception:
-            logger.error("Unexpected reasoning error [%s]", trigger,
-                         exc_info=True)
+            return {
+                "kind": request["kind"],
+                "response": "",
+                "user_text": "",
+                "error": str(exc),
+            }
 
-    def _do_user_reasoning(self, text):
-        """Respond to a user message using visual context."""
-        logger.info("User reasoning for: %s", text)
+    def _execute_user_reasoning(self, request):
+        """Run user reasoning. Called on the worker thread."""
+        text = request["user_text"]
+        context = request["context"]
 
         try:
-            context = self._context_mgr.build_context()
-
             prompt = "{}\n\nThe person said: \"{}\"\n\n{}".format(
                 config.USER_REASONING_PROMPT, text, context
             )
-
             response = self._llm_backend.complete(
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=config.LLM_MAX_TOKENS,
             )
-
             response_text = response.strip()
-            logger.info("LLM user response: %s", response_text)
-            self._send_ui("response", response_text)
 
-            # Store response in context for continuity
-            self._context_mgr.add_response(response_text)
-
-            # Extract facts from the exchange
+            # Queue fact extraction on the summarizer thread
             exchange = "User said: \"{}\"\nYou replied: \"{}\"".format(
                 text, response_text
             )
-            self._context_mgr.extract_facts(exchange)
+            self._context_mgr.queue_fact_extraction(exchange)
 
+            return {
+                "kind": "user",
+                "response": response_text,
+                "user_text": text,
+                "error": None,
+            }
         except LLMError as exc:
-            logger.error("User reasoning failed: %s", exc)
-            self._send_ui("error", "LLM error: {}".format(exc))
-        except Exception:
-            logger.error("Unexpected user reasoning error", exc_info=True)
+            return {
+                "kind": "user",
+                "response": "",
+                "user_text": text,
+                "error": str(exc),
+            }
+
+    def _deliver_reasoning_result(self, result):
+        """Process a completed reasoning result on the main thread."""
+        kind = result["kind"]
+        error = result.get("error")
+
+        if error:
+            logger.error("Reasoning failed [%s]: %s", kind, error)
+            self._send_ui("error", "LLM error: {}".format(error))
+            return
+
+        response_text = result["response"]
+        if not response_text:
+            return
+
+        logger.info("LLM response [%s]: %s", kind, response_text)
+        self._send_ui("response", response_text)
+
+        self._context_mgr.add_response(response_text)
+
+        stats = self._context_mgr.get_stats()
+        logger.debug(
+            "Context stats: immediate=%d, short_term=%d, long_term=%d, facts=%d",
+            stats["immediate"], stats["short_term"], stats["long_term"],
+            stats.get("facts", 0)
+        )
 
     def _update_status(self):
         """Send current status to the UI."""
         parts = ["Phase 3"]
+        if self._reasoning_busy.is_set():
+            parts.append("Thinking...")
         if self._vision is not None:
             parts.append("FPS: {:.0f}".format(self._vision.fps))
         stats = self._context_mgr.get_stats()
@@ -379,7 +497,7 @@ class Controller(object):
     # ------------------------------------------------------------------
 
     def _shutdown(self):
-        """Stop components in order: vision first, then context manager."""
+        """Stop components in order: vision, reasoning worker, context manager."""
         if self._vision is None and self._context_mgr is None:
             return  # already shut down
         logger.info("Shutting down...")
@@ -391,6 +509,13 @@ class Controller(object):
             except Exception:
                 logger.error("Error stopping vision", exc_info=True)
             self._vision = None
+
+        if self._reasoning_thread is not None:
+            self._reasoning_thread.join(timeout=config.LLM_TIMEOUT + 5)
+            if self._reasoning_thread.is_alive():
+                logger.warning("Reasoning worker did not stop within timeout")
+            self._reasoning_thread = None
+            logger.info("Reasoning worker stopped")
 
         if self._context_mgr is not None:
             try:
