@@ -82,6 +82,77 @@ class LLMBackend(abc.ABC):
 
         raise LLMError("Exhausted retries. Last error: {}".format(last_error))
 
+    def _retry_loop_stream(self, fn):
+        """Call fn() with retries, returning response with body unconsumed.
+
+        Like _retry_loop but for stream=True requests.  On success (200)
+        returns the response without reading the body so the caller can
+        iterate over SSE lines.  On error, reads a small chunk for the
+        error message then closes the response.
+        """
+        retryable = {429, 500, 502, 503, 529}
+        last_error = None
+
+        for attempt in range(1 + config.LLM_RETRIES):
+            response = None
+            try:
+                response = fn()
+                if response.status_code == 200:
+                    return response
+
+                # Read a small chunk for error info, then close
+                snippet = ""
+                try:
+                    for chunk in response.iter_content(chunk_size=512):
+                        snippet = chunk.decode("utf-8", errors="replace")[:200]
+                        break
+                finally:
+                    response.close()
+
+                if response.status_code in retryable:
+                    last_error = "HTTP {}: {}".format(
+                        response.status_code, snippet
+                    )
+                    logger.warning(
+                        "LLM stream request failed (attempt %d/%d): %s",
+                        attempt + 1, 1 + config.LLM_RETRIES, last_error
+                    )
+                    if attempt < config.LLM_RETRIES:
+                        delay = min(2 ** attempt, 10)
+                        time.sleep(delay)
+                    continue
+
+                raise LLMError("HTTP {}: {}".format(
+                    response.status_code, snippet
+                ))
+
+            except requests.RequestException as exc:
+                if response is not None:
+                    response.close()
+                last_error = str(exc)
+                logger.warning(
+                    "LLM stream request exception (attempt %d/%d): %s",
+                    attempt + 1, 1 + config.LLM_RETRIES, last_error
+                )
+                if attempt < config.LLM_RETRIES:
+                    delay = min(2 ** attempt, 10)
+                    time.sleep(delay)
+                continue
+
+        raise LLMError("Exhausted retries. Last error: {}".format(last_error))
+
+    def stream_complete(self, messages, system_prompt=None, max_tokens=None):
+        """Stream LLM response tokens as a generator.
+
+        Default implementation calls complete() and yields the full response
+        as a single chunk.  Subclasses override for real streaming.
+
+        Yields:
+            str: text chunks as they arrive.
+        """
+        yield self.complete(messages, system_prompt=system_prompt,
+                            max_tokens=max_tokens)
+
 
 class ClaudeBackend(LLMBackend):
     """Claude Messages API backend via raw HTTP."""
@@ -139,6 +210,68 @@ class ClaudeBackend(LLMBackend):
             ))
 
         return "\n".join(parts)
+
+    def stream_complete(self, messages, system_prompt=None, max_tokens=None):
+        """Stream Claude response tokens via SSE."""
+        if max_tokens is None:
+            max_tokens = config.LLM_MAX_TOKENS
+
+        payload = {
+            "model": self._model,
+            "max_tokens": max_tokens,
+            "temperature": config.LLM_TEMPERATURE,
+            "messages": messages,
+            "stream": True,
+        }
+        if system_prompt:
+            payload["system"] = system_prompt
+
+        headers = {
+            "x-api-key": self._api_key,
+            "anthropic-version": self._version,
+            "content-type": "application/json",
+        }
+
+        def do_request():
+            return requests.post(
+                self._url,
+                headers=headers,
+                data=json.dumps(payload),
+                timeout=config.LLM_TIMEOUT,
+                stream=True,
+            )
+
+        response = self._retry_loop_stream(do_request)
+        response.encoding = "utf-8"
+        got_text = False
+        try:
+            for line in response.iter_lines(decode_unicode=True):
+                if not line or not line.startswith("data:"):
+                    continue
+                data_str = line[len("data:"):].strip()
+                if not data_str:
+                    continue
+                try:
+                    event = json.loads(data_str)
+                except (ValueError, TypeError):
+                    continue
+                etype = event.get("type", "")
+                if etype == "content_block_delta":
+                    delta = event.get("delta", {})
+                    text = delta.get("text", "")
+                    if text:
+                        got_text = True
+                        yield text
+                elif etype == "error":
+                    err = event.get("error", {})
+                    raise LLMError("Stream error: {}".format(
+                        err.get("message", str(err))
+                    ))
+        finally:
+            response.close()
+
+        if not got_text:
+            raise LLMError("No text content in Claude stream response")
 
 
 class OpenAIBackend(LLMBackend):
@@ -200,6 +333,67 @@ class OpenAIBackend(LLMBackend):
             raise LLMError("Empty content in OpenAI response")
 
         return text
+
+    def stream_complete(self, messages, system_prompt=None, max_tokens=None):
+        """Stream OpenAI-compatible response tokens via SSE."""
+        if max_tokens is None:
+            max_tokens = config.LLM_MAX_TOKENS
+
+        oai_messages = []
+        if system_prompt:
+            oai_messages.append({"role": "system", "content": system_prompt})
+        oai_messages.extend(messages)
+
+        payload = {
+            "model": self._model,
+            "max_tokens": max_tokens,
+            "temperature": config.LLM_TEMPERATURE,
+            "messages": oai_messages,
+            "stream": True,
+        }
+
+        headers = {"content-type": "application/json"}
+        if self._api_key:
+            headers["authorization"] = "Bearer {}".format(self._api_key)
+
+        def do_request():
+            return requests.post(
+                self._url,
+                headers=headers,
+                data=json.dumps(payload),
+                timeout=config.LLM_TIMEOUT,
+                stream=True,
+            )
+
+        response = self._retry_loop_stream(do_request)
+        response.encoding = "utf-8"
+        got_text = False
+        try:
+            for line in response.iter_lines(decode_unicode=True):
+                if not line or not line.startswith("data:"):
+                    continue
+                data_str = line[len("data:"):].strip()
+                if data_str == "[DONE]":
+                    break
+                if not data_str:
+                    continue
+                try:
+                    event = json.loads(data_str)
+                except (ValueError, TypeError):
+                    continue
+                choices = event.get("choices", [])
+                if not choices:
+                    continue
+                delta = choices[0].get("delta", {})
+                text = delta.get("content", "")
+                if text:
+                    got_text = True
+                    yield text
+        finally:
+            response.close()
+
+        if not got_text:
+            raise LLMError("No text content in OpenAI stream response")
 
 
 def create_backend(name=None):
