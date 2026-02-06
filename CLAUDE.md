@@ -44,7 +44,7 @@ Controller (Nano)  --->  Vision (local, jetson-inference)
     |
     +--->  LLM Backend (swappable: Claude API or OpenAI-compatible)
     |
-    +--->  Context Manager (tiered memory + async summarization)
+    +--->  Context Manager (5-tier memory + async summarization + persistence)
     |
     +--->  (Future) Arduino serial for hardware control
 ```
@@ -93,7 +93,7 @@ Five threads: main (controller loop), vision-capture, context-summarizer, reason
 - `queue_fact_extraction()`: non-blocking enqueue, LLM extraction runs on summarizer thread
 - High-importance entries (>=2) skip summarization, preserved with original text in short-term
 - `build_context()` includes `[Known facts]` section before `[Right now]`
-- Token budget: facts 10%, immediate 45%, short-term 25%, long-term 20%
+- Token budget: facts 10%, session history 5%, immediate 42%, short-term 25%, long-term 18%
 
 ### 3E: Async Reasoning Worker
 - All LLM reasoning calls (periodic, reactive, user) run on a dedicated `reasoning-worker` thread
@@ -112,6 +112,18 @@ Five threads: main (controller loop), vision-capture, context-summarizer, reason
 - `_retry_loop_stream()`: retry variant that returns response with body unconsumed for streaming
 - Configurable via `controller/config.py`: `STREAMING_ENABLED` (default True)
 
+### 3G: Persistent Memory
+- `controller/persistence.py`: pure file I/O module, no LLM calls
+- Facts persist to `.companion/facts.json`, sessions to `.companion/sessions/` (project-local, gitignored)
+- All writes atomic: temp file + `os.rename()` prevents corruption on crash
+- Directories created with `0o700` (owner-only) to protect user data
+- Facts loaded on startup, deduplicated with in-memory facts
+- Recent sessions (max 5) loaded on startup, combined into `[Previous sessions]` context section
+- Session snapshots saved periodically (60s) and on clean shutdown
+- Final shutdown snapshot flushes important immediate-tier entries (person events, conversations) into session file
+- Graceful degradation: corrupt files skipped, disk errors disable persistence without crashing
+- Configurable via env vars: `PERSISTENCE_ENABLED`, `PERSISTENCE_DIR`, `MAX_SESSION_HISTORY`
+
 ### CLI
 - `python3 -m controller --backend openai` — UI mode (default)
 - `python3 -m controller --headless --backend openai` — headless mode
@@ -127,8 +139,12 @@ Five threads: main (controller loop), vision-capture, context-summarizer, reason
 - `SUMMARIZER_API_URL`: Summarizer endpoint override (falls back to `OPENAI_API_URL`)
 - `SUMMARIZER_API_KEY`: Summarizer API key override (falls back to `OPENAI_API_KEY`)
 - `SUMMARIZER_MODEL`: Summarizer model override (falls back to main model)
+- `PERSISTENCE_ENABLED`: Enable/disable persistent memory (default `true`)
+- `PERSISTENCE_DIR`: Override persistence directory (default `.companion/` in project root)
+- `MAX_SESSION_HISTORY`: Number of past sessions to load (default `5`)
 
 ## Testing
 - Unit tests: `python3 test_streaming.py` — mocked HTTP layer, no live API calls needed
-- Tests cover: SSE parsing (Claude + OpenAI), retry logic, controller streaming flow, UI message dispatch
+- Unit tests: `python3 test_persistence.py` — persistence I/O and context manager integration
+- Tests cover: SSE parsing (Claude + OpenAI), retry logic, controller streaming flow, UI message dispatch, facts round-trip, session save/load, final snapshot flush, graceful degradation
 - Python 3.6 compatible — uses `unittest` + `unittest.mock`
