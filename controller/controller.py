@@ -578,6 +578,9 @@ class Controller(object):
             stats["immediate"], stats["short_term"],
             stats["long_term"], stats.get("facts", 0),
         ))
+        sessions = stats.get("sessions", 0)
+        if sessions:
+            parts.append("Hist: {}".format(sessions))
         self._send_ui("status", " | ".join(parts))
 
     # ------------------------------------------------------------------

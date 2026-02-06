@@ -1,7 +1,8 @@
-"""Tiered context memory with async summarization.
+"""Tiered context memory with async summarization and persistence.
 
-Four tiers:
+Five tiers:
 - Facts: persistent strings that survive all summarization (max 20)
+- Session history: entries from previous sessions
 - Immediate: raw events (deque), max 30s age, importance-scored
 - Short-term: summarized batches (list), max 5min age
 - Long-term: compressed summaries (list)
@@ -9,6 +10,9 @@ Four tiers:
 Background thread handles summarization and compression without blocking
 the controller main loop.  High-importance entries (>=2) skip summarization
 and move directly to short-term with original text.
+
+When persistence is enabled, facts and session data are saved to disk
+(~/.companion/) and restored on startup.
 """
 
 import collections
@@ -17,6 +21,7 @@ import threading
 import time
 
 from . import config
+from . import persistence
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +61,13 @@ class ContextManager(object):
         # Pending fact extraction requests (drained by summarizer thread)
         self._fact_queue = collections.deque(maxlen=5)
 
+        # Persistence state
+        self._session_id = None
+        self._session_started_at = None
+        self._facts_dirty = False
+        self._persistence_available = True
+        self._session_history = []  # list of {"label": str, "text": str}
+
         # Summarization thread
         self._thread = None
         self._stop_event = threading.Event()
@@ -64,6 +76,8 @@ class ContextManager(object):
         """Start the background summarization thread."""
         if self._thread is not None:
             return
+        # Load persisted state before starting the thread
+        self._load_persisted_state()
         self._stop_event.clear()
         self._thread = threading.Thread(
             target=self._summarization_loop,
@@ -79,6 +93,9 @@ class ContextManager(object):
         if self._thread is not None:
             self._thread.join(timeout=10.0)
             self._thread = None
+        # Final persistence save
+        self._save_session_snapshot(final=True)
+        self._save_facts_if_dirty()
         logger.info("Context manager stopped")
 
     def add_event(self, event):
@@ -146,6 +163,7 @@ class ContextManager(object):
                 if existing.lower() == fact.lower():
                     return
             self._facts.append(fact)
+            self._facts_dirty = True
             # Enforce max
             while len(self._facts) > config.FACTS_MAX_ENTRIES:
                 self._facts.pop(0)
@@ -184,14 +202,18 @@ class ContextManager(object):
         """Assemble all tiers into a context string.
 
         Returns:
-            str with sections [Known facts], [Right now], [Recent history],
-            [Background].
+            str with sections [Known facts], [Previous sessions],
+            [Right now], [Recent history], [Background].
         """
         if max_tokens is None:
             max_tokens = config.TOKEN_BUDGET_TOTAL
 
         chars_facts = int(
             max_tokens * config.TOKEN_BUDGET_FACTS_RATIO
+            * config.CHARS_PER_TOKEN
+        )
+        chars_session = int(
+            max_tokens * config.TOKEN_BUDGET_SESSION_HISTORY_RATIO
             * config.CHARS_PER_TOKEN
         )
         chars_immediate = int(
@@ -212,6 +234,7 @@ class ContextManager(object):
             imm_entries = list(self._immediate)
             short_texts = [e["text"] for e in self._short_term]
             long_texts = [e["text"] for e in self._long_term]
+            session_entries = list(self._session_history)
 
         sections = []
 
@@ -219,6 +242,17 @@ class ContextManager(object):
         facts_fitted = self._fit_to_budget(facts_list, chars_facts, "oldest")
         if facts_fitted:
             sections.append("[Known facts]\n" + "\n".join(facts_fitted))
+
+        # Session history tier
+        if session_entries:
+            session_texts = []
+            for entry in session_entries:
+                session_texts.append("{}\n{}".format(entry["label"], entry["text"]))
+            session_fitted = self._fit_to_budget(
+                session_texts, chars_session, "newest"
+            )
+            if session_fitted:
+                sections.append("[Previous sessions]\n" + "\n".join(session_fitted))
 
         # Immediate tier: importance-weighted fitting
         imm_texts = [e["text"] for e in imm_entries]
@@ -245,7 +279,8 @@ class ContextManager(object):
         """Return tier sizes for monitoring.
 
         Returns:
-            dict with "immediate", "short_term", "long_term", "facts" counts.
+            dict with "immediate", "short_term", "long_term", "facts",
+            "sessions" counts.
         """
         with self._lock:
             return {
@@ -253,6 +288,7 @@ class ContextManager(object):
                 "short_term": len(self._short_term),
                 "long_term": len(self._long_term),
                 "facts": len(self._facts),
+                "sessions": len(self._session_history),
             }
 
     # ------------------------------------------------------------------
@@ -386,13 +422,135 @@ class ContextManager(object):
         return result
 
     # ------------------------------------------------------------------
+    # Persistence
+    # ------------------------------------------------------------------
+
+    def _load_persisted_state(self):
+        """Load facts and recent sessions from disk on startup."""
+        if not config.PERSISTENCE_ENABLED:
+            logger.info("Persistence disabled")
+            return
+
+        if not persistence.ensure_dirs(config.PERSISTENCE_DIR):
+            self._persistence_available = False
+            logger.warning("Persistence unavailable (directory creation failed)")
+            return
+
+        # Generate session ID for this run
+        self._session_id = persistence.generate_session_id()
+        self._session_started_at = time.time()
+        logger.info("Session ID: %s", self._session_id)
+
+        # Load facts
+        loaded_facts = persistence.load_facts(config.PERSISTENCE_DIR)
+        if loaded_facts:
+            for fact in loaded_facts:
+                self.add_fact(fact)
+            # Reset dirty flag -- these were already on disk
+            with self._lock:
+                self._facts_dirty = False
+            logger.info("Loaded %d persisted facts", len(loaded_facts))
+
+        # Load recent sessions
+        sessions = persistence.load_recent_sessions(
+            config.PERSISTENCE_DIR, config.MAX_SESSION_HISTORY
+        )
+        with self._lock:
+            for session in sessions:
+                started_at = session.get("started_at")
+                if started_at is None:
+                    continue
+                label = persistence.format_session_label(started_at)
+                # Combine short-term + long-term texts into one entry
+                texts = []
+                for entry in session.get("short_term_entries", []):
+                    t = entry.get("text", "")
+                    if t:
+                        texts.append(t)
+                for entry in session.get("long_term_entries", []):
+                    t = entry.get("text", "")
+                    if t:
+                        texts.append(t)
+                if texts:
+                    self._session_history.append({
+                        "label": label,
+                        "text": " ".join(texts),
+                    })
+        if sessions:
+            logger.info("Loaded %d previous sessions", len(sessions))
+
+    def _save_facts_if_dirty(self):
+        """Save facts to disk if they've changed since last save."""
+        if not config.PERSISTENCE_ENABLED or not self._persistence_available:
+            return
+
+        with self._lock:
+            if not self._facts_dirty:
+                return
+            facts_copy = list(self._facts)
+            self._facts_dirty = False
+
+        try:
+            persistence.save_facts(config.PERSISTENCE_DIR, facts_copy)
+        except Exception:
+            logger.warning("Failed to save facts", exc_info=True)
+            with self._lock:
+                self._facts_dirty = True  # retry next cycle
+
+    def _save_session_snapshot(self, final=False):
+        """Save current session data to disk.
+
+        Args:
+            final: if True, set ended_at timestamp and flush important
+                   immediate-tier entries into the snapshot so short
+                   sessions don't lose conversations and person events.
+        """
+        if not config.PERSISTENCE_ENABLED or not self._persistence_available:
+            return
+        if self._session_id is None:
+            return
+
+        with self._lock:
+            short_entries = [
+                {"timestamp": e["timestamp"], "text": e["text"]}
+                for e in self._short_term
+            ]
+            long_entries = [
+                {"timestamp": e["timestamp"], "text": e["text"]}
+                for e in self._long_term
+            ]
+            # On final save, capture important immediate entries that
+            # haven't been promoted yet (conversations, person events)
+            if final:
+                for e in self._immediate:
+                    if e["importance"] >= IMPORTANCE_EVENT:
+                        short_entries.append({
+                            "timestamp": e["timestamp"],
+                            "text": e["text"],
+                        })
+
+        session_data = {
+            "session_id": self._session_id,
+            "started_at": self._session_started_at,
+            "ended_at": time.time() if final else None,
+            "short_term_entries": short_entries,
+            "long_term_entries": long_entries,
+        }
+
+        try:
+            persistence.save_session(config.PERSISTENCE_DIR, session_data)
+        except Exception:
+            logger.warning("Failed to save session snapshot", exc_info=True)
+
+    # ------------------------------------------------------------------
     # Summarization thread
     # ------------------------------------------------------------------
 
     def _summarization_loop(self):
-        """Background loop: extract facts, summarize, compress."""
+        """Background loop: extract facts, summarize, compress, persist."""
         last_summarize = time.time()
         last_compress = time.time()
+        last_session_save = time.time()
 
         while not self._stop_event.is_set():
             now = time.time()
@@ -405,6 +563,9 @@ class ContextManager(object):
                     exchange = self._fact_queue.popleft()
                 self._extract_facts_sync(exchange)
 
+            # Save facts to disk if dirty
+            self._save_facts_if_dirty()
+
             # Summarize: drain old immediate entries -> short-term
             if now - last_summarize >= config.SUMMARIZE_INTERVAL:
                 self._do_summarize(now)
@@ -414,6 +575,11 @@ class ContextManager(object):
             if now - last_compress >= config.COMPRESS_INTERVAL:
                 self._do_compress(now)
                 last_compress = now
+
+            # Periodic session snapshot
+            if now - last_session_save >= config.SESSION_SAVE_INTERVAL:
+                self._save_session_snapshot()
+                last_session_save = now
 
             # Sleep with responsive shutdown
             self._stop_event.wait(5.0)

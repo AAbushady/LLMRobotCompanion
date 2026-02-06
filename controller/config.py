@@ -39,6 +39,7 @@ def _load_dotenv():
 
 
 _dotenv = _load_dotenv()
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _get(key, default=""):
@@ -108,13 +109,22 @@ COMPRESS_INTERVAL = 60.0  # seconds between compression runs
 # ---------------------------------------------------------------------------
 TOKEN_BUDGET_TOTAL = 3000
 TOKEN_BUDGET_FACTS_RATIO = 0.10
-TOKEN_BUDGET_IMMEDIATE_RATIO = 0.45
+TOKEN_BUDGET_SESSION_HISTORY_RATIO = 0.05
+TOKEN_BUDGET_IMMEDIATE_RATIO = 0.42
 TOKEN_BUDGET_SHORT_TERM_RATIO = 0.25
-TOKEN_BUDGET_LONG_TERM_RATIO = 0.20
+TOKEN_BUDGET_LONG_TERM_RATIO = 0.18
 CHARS_PER_TOKEN = 4  # rough estimate
 
 # Facts tier
 FACTS_MAX_ENTRIES = 20
+
+# ---------------------------------------------------------------------------
+# Persistence
+# ---------------------------------------------------------------------------
+PERSISTENCE_ENABLED = _get("PERSISTENCE_ENABLED", "true").lower() in ("true", "1", "yes")
+PERSISTENCE_DIR = _get("PERSISTENCE_DIR", os.path.join(_PROJECT_ROOT, ".companion"))
+MAX_SESSION_HISTORY = int(_get("MAX_SESSION_HISTORY", "5"))
+SESSION_SAVE_INTERVAL = 60.0
 
 # ---------------------------------------------------------------------------
 # Controller timing
@@ -160,7 +170,9 @@ USER_REASONING_PROMPT = (
 
 FACT_EXTRACTION_PROMPT = (
     "Extract persistent facts worth remembering from this conversation exchange. "
-    "Only extract facts about the person, their preferences, or important context "
-    "that would be useful to remember across conversations. "
+    "Focus on: things the user explicitly asks you to remember, the user's name, "
+    "preferences, interests, or important personal context. "
+    "Do NOT extract facts about what the camera sees or the current scene. "
+    "If the user asks you to remember something, always extract it. "
     "Output one fact per line. If nothing worth remembering, output 'none'."
 )
